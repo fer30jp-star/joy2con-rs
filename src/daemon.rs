@@ -430,17 +430,17 @@ impl Manager {
     // ---------------------------------------------------------- connections
 
     fn connect(&self, mac: String, side: String, kind: String, addr_type: String) {
-        // An LE connection can't be created while discovery holds the controller.
-        for _ in 0..40 {
-            if self.inner.lock().scanning == "off" {
-                break;
+        if !scan_while_connecting() {
+            // Wait for our discovery to stop before creating the connection.
+            for _ in 0..40 {
+                if self.inner.lock().scanning == "off" {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        // Some adapters (e.g. UGREEN BT5.4) reset if the connection starts while
-        // the controller is still leaving scan mode; give it time to settle.
-        if self.connect_delay > 0.0 {
-            std::thread::sleep(Duration::from_secs_f64(self.connect_delay));
+            if self.connect_delay > 0.0 {
+                std::thread::sleep(Duration::from_secs_f64(self.connect_delay));
+            }
         }
         let what = match kind.as_str() {
             "sync" => "in sync mode",
@@ -1204,7 +1204,18 @@ async fn adapter_address(session: &bluer::Session) -> bluer::Result<String> {
     Ok(adapter.address().await?.to_string().to_uppercase())
 }
 
-/// Scan while a Joy-Con side is missing and nothing is connecting.
+/// Keep discovery running while a connection is created, as bluetoothctl
+/// does. With discovery off the kernel starts its own filtered background scan
+/// to create the connection, which some adapters (UGREEN BT5.4) don't survive.
+/// On by default; JOY2CON_SCAN_WHILE_CONNECTING=0 restores the original
+/// behaviour (stop scanning, optionally wait JOY2CON_CONNECT_DELAY, connect).
+fn scan_while_connecting() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("JOY2CON_SCAN_WHILE_CONNECTING").map(|v| v != "0").unwrap_or(true))
+}
+
+/// Scan while a Joy-Con side is missing (and, unless scanning while
+/// connecting, while nothing is connecting).
 async fn scan_loop(mgr: Arc<Manager>, session: bluer::Session) {
     loop {
         let (wanted, connecting) = {
@@ -1216,7 +1227,7 @@ async fn scan_loop(mgr: Arc<Manager>, session: bluer::Session) {
             mgr.scan_wake.notified().await;
             continue;
         }
-        if connecting {
+        if connecting && !scan_while_connecting() {
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         }
@@ -1267,7 +1278,7 @@ async fn scan_once(mgr: &Arc<Manager>, session: &bluer::Session) -> bluer::Resul
         }
         mgr.expire_seen();
         let inner = mgr.inner.lock();
-        if Manager::wanted_sides(&inner).is_empty() || !inner.connecting.is_empty() {
+        if Manager::wanted_sides(&inner).is_empty() || (!inner.connecting.is_empty() && !scan_while_connecting()) {
             break;
         }
     }
