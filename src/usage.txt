@@ -1,0 +1,8 @@
+joy2con: Switch 2 Joy-Con driver and app for Linux
+
+  joy2con                    open the app
+  joy2con app [--hidden]     open the app (--hidden: start in the tray)
+  joy2con daemon [-v]        run the driver (normally the systemd user service)
+  joy2con status             print what the driver sees
+  joy2con setup [--interval-ms 7.5|15]
+                             one-time Bluetooth settings (asks for your password)

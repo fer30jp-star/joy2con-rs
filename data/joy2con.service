@@ -1,0 +1,11 @@
+[Unit]
+Description=joy2con: Switch 2 Joy-Con driver (Rust)
+After=bluetooth.target
+
+[Service]
+ExecStart=%h/.local/bin/joy2con daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=joy2con
+Comment=Switch 2 Joy-Cons on Linux
+Exec=joy2con
+Icon=joy2con
+Categories=Game;Settings;HardwareSettings;
+Keywords=joycon;joy-con;switch;controller;gamepad;mouse;

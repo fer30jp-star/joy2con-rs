@@ -1,0 +1,29 @@
+[package]
+name = "joy2con"
+description = "Switch 2 Joy-Con driver and app for Linux (Rust port of joy2con)"
+license = "GPL-3.0-or-later"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes = "0.9.4"
+anyhow = "1.0.104"
+bluer = { version = "0.17.4", features = ["bluetoothd"] }
+eframe = "0.37.0"
+env_logger = "0.11.11"
+evdev = "0.13.2"
+futures = "0.3.34"
+getrandom = "0.4.3"
+ksni = { version = "0.3.7", features = ["blocking"] }
+libc = "0.2.191"
+log = "0.4.35"
+parking_lot = "0.13.0"
+resvg = "0.50.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "time", "sync", "signal"] }
+
+[profile.release]
+strip = true
+lto = "thin"

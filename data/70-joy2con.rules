@@ -1,0 +1,4 @@
+# joy2con creates virtual controllers through /dev/uhid and the mouse-mode
+# pointer through /dev/uinput; let the user at the local seat do that.
+KERNEL=="uhid", TAG+="uaccess"
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
