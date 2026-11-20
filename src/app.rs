@@ -478,6 +478,9 @@ impl App {
                 }
             }
         }
+        if connected {
+            self.connect_card(ui, st);
+        }
 
         // Both Joy-Cons side by side, live; clicking one opens its page.
         ui.add_space(12.0);
@@ -597,6 +600,52 @@ impl App {
         });
 
         self.mouse_card(ui, st, None);
+    }
+
+    /// The "Intentar conectar" button with a short summary of what is going on.
+    fn connect_card(&mut self, ui: &mut egui::Ui, st: &Value) {
+        let s = connection_summary(st);
+        Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .stroke(Stroke::new(1.0, s.color.gamma_multiply(0.7)))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                    ui.painter().circle_filled(r.center(), 5.0, s.color);
+                    ui.label(RichText::new(&s.title).strong());
+                    if s.busy {
+                        ui.add(egui::Spinner::new().size(14.0));
+                    }
+                });
+                if !s.detail.is_empty() {
+                    ui.label(RichText::new(&s.detail).small().color(ui.visuals().weak_text_color()));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let label = if s.both { "Buscar de nuevo" } else { "Intentar conectar" };
+                    if ui.button(label).clicked() {
+                        self.client.action("connect_now", json!({}));
+                    }
+                    let c = &st["conn"];
+                    if c["attempts"].as_u64().unwrap_or(0) > 0 || c["adapter_resets"].as_u64().unwrap_or(0) > 0 {
+                        ui.label(
+                            RichText::new(format!(
+                                "Intentos: {} · fallidos: {} · reinicios del adaptador: {}",
+                                c["attempts"], c["failures"], c["adapter_resets"]
+                            ))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
+                        );
+                    }
+                });
+            });
+        if s.busy {
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
+        ui.add_space(6.0);
     }
 
     fn mouse_card(&mut self, ui: &mut egui::Ui, st: &Value, only: Option<&str>) {
@@ -947,6 +996,133 @@ fn leds_for(st: &Value, side: &str) -> u8 {
     let e = &st["emulated"];
     let d = if e["pro"].is_object() { &e["pro"] } else { &e[side] };
     d["player_leds"].as_u64().unwrap_or(0) as u8
+}
+
+struct Summary {
+    color: Color32,
+    title: String,
+    detail: String,
+    busy: bool,
+    both: bool,
+}
+
+/// A plain-language account of the connection, from the daemon's "conn" block.
+fn connection_summary(st: &Value) -> Summary {
+    let red = Color32::from_rgb(0xe5, 0x48, 0x4d);
+    let orange = Color32::from_rgb(0xf5, 0xa5, 0x24);
+    let blue = Color32::from_rgb(0x3e, 0x7b, 0xfa);
+    let green = Color32::from_rgb(0x30, 0xa4, 0x6c);
+    let s = |color, title: &str, detail: &str, busy| Summary {
+        color,
+        title: title.into(),
+        detail: detail.into(),
+        busy,
+        both: false,
+    };
+    let c = &st["conn"];
+    let now = crate::util::wall();
+    let left = st["joycons"]["left"].is_object();
+    let right = st["joycons"]["right"].is_object();
+    if !c["adapter_present"].as_bool().unwrap_or(true) {
+        return s(
+            red,
+            "No encuentro el adaptador Bluetooth.",
+            "Revisa que esté conectado. Si se acaba de reiniciar, espera unos segundos.",
+            true,
+        );
+    }
+    if !c["adapter_powered"].as_bool().unwrap_or(true) {
+        return s(red, "El Bluetooth está apagado.", "Presiona \"Intentar conectar\" para encenderlo.", false);
+    }
+    if left && right {
+        return Summary { both: true, ..s(green, "Los dos Joy-Con están conectados.", "", false) };
+    }
+    if let Some(side) = c["connecting_side"].as_str() {
+        return s(
+            blue,
+            &format!("Conectando el {}…", side_name(side)),
+            "Mantenlo cerca de la PC y no lo apagues.",
+            true,
+        );
+    }
+    let resets = c["adapter_resets"].as_u64().unwrap_or(0);
+    let failures = c["failures"].as_u64().unwrap_or(0);
+    let recent_fail = now - c["last_error_t"].as_f64().unwrap_or(0.0) < 25.0;
+    if recent_fail && resets > 0 {
+        return s(
+            orange,
+            &format!(
+                "Tu adaptador Bluetooth se reinició al conectar ({resets} {}).",
+                if resets == 1 { "vez" } else { "veces" }
+            ),
+            "joy2con lo vuelve a intentar solo mientras el Joy-Con siga en modo SYNC. Si sigue pasando, prueba \
+             `joy2con setup --restore` (ajustes de Bluetooth originales) o `joy2con setup --interval-ms 30`, o usa otro adaptador.",
+            true,
+        );
+    }
+    if recent_fail {
+        let err = c["last_error"].as_str().unwrap_or("");
+        return s(
+            orange,
+            &format!(
+                "No se pudo conectar ({failures} {}).",
+                if failures == 1 { "intento fallido" } else { "intentos fallidos" }
+            ),
+            &format!("{err}. Lo vuelve a intentar solo mientras el Joy-Con siga en modo SYNC."),
+            true,
+        );
+    }
+    let seen: Vec<&Value> = st["seen"].as_array().into_iter().flatten().collect();
+    let pending: Vec<&str> =
+        seen.iter().filter(|v| v["kind"] != "other-host").filter_map(|v| v["side"].as_str()).collect();
+    if !pending.is_empty() {
+        let names: Vec<&str> = pending.iter().map(|s| side_name(s)).collect();
+        return s(blue, &format!("Veo el {}; conectando en un momento…", names.join(" y el ")), "", true);
+    }
+    if seen.iter().any(|v| v["kind"] == "other-host") {
+        return s(
+            blue,
+            "Hay un Joy-Con emparejado con otro equipo.",
+            "Usa el botón \"Usar con esta PC\" de arriba.",
+            false,
+        );
+    }
+    let requested = now - c["requested_at"].as_f64().unwrap_or(0.0);
+    let missing = match (left, right) {
+        (true, false) => Some("right"),
+        (false, true) => Some("left"),
+        _ => None,
+    };
+    if requested < 30.0 {
+        return s(
+            blue,
+            "Buscando Joy-Cons…",
+            "Presiona cualquier botón en cada mitad. Si no despierta, mantén SYNC 3 segundos hasta que la luz parpadee rápido.",
+            true,
+        );
+    }
+    if let Some(m) = missing {
+        return s(
+            blue,
+            &format!("Falta el {}.", side_name(m)),
+            "Presiona cualquier botón en él, o mantén SYNC 3 segundos si no despierta.",
+            false,
+        );
+    }
+    if requested < 120.0 {
+        return s(
+            orange,
+            "No veo ningún Joy-Con.",
+            "Mantén SYNC 3 segundos en cada mitad hasta que la luz parpadee rápido, y acércalos a la PC. Si están descargados, cárgalos un rato.",
+            false,
+        );
+    }
+    s(
+        blue,
+        "Esperando a los Joy-Con.",
+        "Presiona cualquier botón en un Joy-Con para despertarlo, o presiona \"Intentar conectar\".",
+        false,
+    )
 }
 
 fn charging(jc: &Value) -> bool {

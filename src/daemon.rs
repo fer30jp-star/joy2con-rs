@@ -176,6 +176,42 @@ pub struct Inner {
     trackers: HashMap<String, MouseTracker>,
     vmouse: Option<VirtualMouse>,
     vmouse_error: Option<String>,
+    conn: ConnStatus,
+}
+
+/// What the app's "Intentar conectar" summary is built from.
+#[derive(Clone, Debug, Default, Serialize)]
+struct ConnStatus {
+    attempts: u32,
+    failures: u32,
+    adapter_resets: u32,
+    last_error: Option<String>,
+    last_error_t: f64,
+    requested_at: f64,
+    connecting_side: Option<String>,
+    last_connected_t: f64,
+    adapter_present: bool,
+    adapter_powered: bool,
+}
+
+/// Identity of the Bluetooth adapter: its hci name and its USB device number,
+/// which changes whenever the adapter drops off the bus and comes back.
+fn adapter_ident() -> Option<(String, String)> {
+    let mut names: Vec<String> = std::fs::read_dir("/sys/class/bluetooth")
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("hci") && !n.contains(':'))
+        .collect();
+    names.sort();
+    let name = names.into_iter().next()?;
+    let dev = std::fs::canonicalize(format!("/sys/class/bluetooth/{name}/device")).ok();
+    let devnum = dev
+        .and_then(|d| d.parent().map(|p| p.join("devnum")))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    Some((name, devnum))
 }
 
 pub struct Manager {
@@ -186,6 +222,8 @@ pub struct Manager {
     tx: Mutex<Sender<Msg>>,
     pub scan_wake: tokio::sync::Notify,
     connect_delay: f64,
+    adapter: Mutex<Option<(String, String)>>,
+    bt: Mutex<Option<(tokio::runtime::Handle, bluer::Session)>>,
     me: Weak<Manager>,
 }
 
@@ -220,11 +258,14 @@ impl Manager {
                 trackers: HashMap::new(),
                 vmouse: None,
                 vmouse_error: None,
+                conn: ConnStatus { adapter_present: true, adapter_powered: true, ..Default::default() },
             }),
             log: Mutex::new(EventLog { events: VecDeque::new(), seq: 0 }),
             tx: Mutex::new(tx),
             scan_wake: tokio::sync::Notify::new(),
             connect_delay,
+            adapter: Mutex::new(adapter_ident()),
+            bt: Mutex::new(None),
             me: me.clone(),
         });
         let worker = Arc::downgrade(&mgr);
@@ -334,6 +375,53 @@ impl Manager {
             .spawn(move || me.connect(mac, side, kind, addr_type));
     }
 
+    /// Count adapter resets: its USB device number changes when it drops off the bus.
+    pub fn check_adapter(&self) {
+        let now_id = adapter_ident();
+        let changed = {
+            let mut cur = self.adapter.lock();
+            let changed = matches!((&*cur, &now_id), (Some(a), Some(b)) if a != b);
+            if now_id.is_some() {
+                *cur = now_id.clone();
+            }
+            changed
+        };
+        let mut inner = self.inner.lock();
+        inner.conn.adapter_present = now_id.is_some();
+        if changed {
+            inner.conn.adapter_resets += 1;
+            drop(inner);
+            self.event("the Bluetooth adapter reset itself (it dropped off USB and came back)", "warn");
+        }
+    }
+
+    /// The app's "Intentar conectar": forget recent failures, make sure
+    /// Bluetooth is on and scan right away.
+    fn connect_now(&self) {
+        {
+            let mut inner = self.inner.lock();
+            inner.ignore_until.clear();
+            let present = inner.conn.adapter_present;
+            inner.conn = ConnStatus {
+                requested_at: wall(),
+                adapter_present: present,
+                adapter_powered: true,
+                ..Default::default()
+            };
+        }
+        if let Some((rt, session)) = self.bt.lock().clone() {
+            rt.spawn(async move {
+                if let Ok(a) = session.default_adapter().await
+                    && !a.is_powered().await.unwrap_or(true)
+                {
+                    let _ = a.set_powered(true).await;
+                }
+            });
+        }
+        self.event("connect requested from the app; looking for Joy-Cons", "info");
+        self.scan_wake.notify_one();
+    }
+
     fn expire_seen(&self) {
         let t = wall();
         self.inner.lock().seen.retain(|_, v| t - v["t"].as_f64().unwrap_or(0.0) <= 15.0);
@@ -360,6 +448,11 @@ impl Manager {
             _ => "taking over",
         };
         self.event(&format!("{side} Joy-Con {mac} {what}; connecting"), "info");
+        {
+            let mut inner = self.inner.lock();
+            inner.conn.attempts += 1;
+            inner.conn.connecting_side = Some(side.clone());
+        }
         let w1 = self.me.clone();
         let w2 = self.me.clone();
         let jc = JoyCon2::new(
@@ -386,7 +479,14 @@ impl Manager {
             let mut inner = self.inner.lock();
             inner.connecting.remove(&mac);
             inner.ignore_until.insert(mac.clone(), now() + 1.0);
+            inner.conn.failures += 1;
+            inner.conn.last_error = Some(format!("{side}: {e}"));
+            inner.conn.last_error_t = wall();
+            inner.conn.connecting_side = None;
             drop(inner);
+            // A failed attempt often takes the adapter down with it; notice that now.
+            std::thread::sleep(Duration::from_millis(500));
+            self.check_adapter();
             self.scan_wake.notify_one();
             return;
         }
@@ -396,6 +496,8 @@ impl Manager {
             let mut inner = self.inner.lock();
             inner.connecting.remove(&mac);
             inner.takeover.remove(&mac);
+            inner.conn.connecting_side = None;
+            inner.conn.last_connected_t = wall();
             if let Some(old) = inner.joycons.get(&side)
                 && !Arc::ptr_eq(old, &jc)
             {
@@ -950,7 +1052,7 @@ impl Manager {
             "foreign_discovery": inner.foreign_discovery,
             "gyro_autocal": inner.config.gyro_autocal, "imu_source": inner.config.imu_source,
             "mouse": inner.config.mouse, "mouse_error": inner.vmouse_error,
-            "joycons": joycons, "emulated": emulated,
+            "joycons": joycons, "emulated": emulated, "conn": inner.conn,
             "seen": inner.seen.values().cloned().collect::<Vec<_>>(),
             "known": inner.config.controllers,
         })
@@ -1016,6 +1118,7 @@ impl Manager {
                     self.scan_wake.notify_one();
                 }
             }
+            "connect_now" => self.connect_now(),
             "forget" => {
                 if let Some(mac) = args.get("mac").and_then(|v| v.as_str()) {
                     let mut inner = self.inner.lock();
@@ -1175,8 +1278,14 @@ async fn scan_once(mgr: &Arc<Manager>, session: &bluer::Session) -> bluer::Resul
 /// new connections can't be created and connected controllers lose reports.
 async fn discovery_watch(mgr: Arc<Manager>, session: bluer::Session) {
     loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let Ok(adapter) = session.default_adapter().await else { continue };
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        mgr.check_adapter();
+        let Ok(adapter) = session.default_adapter().await else {
+            mgr.inner.lock().conn.adapter_powered = false;
+            continue;
+        };
+        let powered = adapter.is_powered().await.unwrap_or(false);
+        mgr.inner.lock().conn.adapter_powered = powered;
         let Ok(disc) = adapter.is_discovering().await else { continue };
         let on = disc && mgr.inner.lock().scanning != "active";
         let changed = {
@@ -1208,6 +1317,7 @@ pub fn run(verbose: bool) -> anyhow::Result<()> {
         let session = bluer::Session::new().await?;
         let host = adapter_address(&session).await?;
         let mgr = Manager::new(host);
+        *mgr.bt.lock() = Some((tokio::runtime::Handle::current(), session.clone()));
         let server = crate::server::Server::start(mgr.clone())?;
         let scan = tokio::spawn(scan_loop(mgr.clone(), session.clone()));
         let watch = tokio::spawn(discovery_watch(mgr.clone(), session.clone()));

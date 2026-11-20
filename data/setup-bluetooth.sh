@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # One-time system setup for joy2con. Run as root (pkexec or sudo).
-# Usage: setup-bluetooth.sh [INTERVAL_UNITS]   (1.25 ms units; 6 = 7.5 ms, 12 = 15 ms)
+# Usage: setup-bluetooth.sh [INTERVAL_UNITS | restore]   (1.25 ms units; 6 = 7.5 ms, 12 = 15 ms)
 #
 # 1. LE connection interval. The Joy-Con 2 never asks for a faster interval
 #    itself, so the host default decides its report rate: BlueZ's default
@@ -12,9 +12,17 @@
 # A copy of the original file is kept at main.conf.joy2con.bak.
 set -euo pipefail
 
+conf=/etc/bluetooth/main.conf
+if [[ ${1:-} == restore ]]; then
+    [[ -f $conf.joy2con.bak ]] || { echo "joy2con: no backup at $conf.joy2con.bak; nothing to restore" >&2; exit 1; }
+    cp -a "$conf.joy2con.bak" "$conf"
+    systemctl restart bluetooth
+    echo "joy2con: restored the original Bluetooth settings from $conf.joy2con.bak"
+    exit 0
+fi
+
 units=${1:-6}
 [[ $units =~ ^[0-9]+$ ]] || { echo "interval must be a number of 1.25 ms units" >&2; exit 1; }
-conf=/etc/bluetooth/main.conf
 [[ -f $conf.joy2con.bak ]] || cp -a "$conf" "$conf.joy2con.bak"
 
 set_key() {  # set_key SECTION KEY VALUE: uncomment or replace KEY, else add it to [SECTION]

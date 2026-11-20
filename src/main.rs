@@ -6,7 +6,7 @@
 //!   joy2con app [--hidden]  open the app; --hidden starts in the tray
 //!   joy2con daemon [-v]     run the driver (normally the systemd user service)
 //!   joy2con status          print what the driver sees
-//!   joy2con setup [--interval-ms 7.5|15]
+//!   joy2con setup [--interval-ms 7.5|15] | --restore
 //!                           one-time Bluetooth settings (asks for your password)
 
 mod app;
@@ -73,7 +73,11 @@ fn setup(args: &[String]) -> i32 {
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(7.5);
     // BlueZ counts the LE connection interval in 1.25 ms units.
-    let units = ((interval / 1.25).round() as i64).clamp(6, 3200);
+    let units = if args.iter().any(|a| a == "--restore") {
+        "restore".to_string()
+    } else {
+        ((interval / 1.25).round() as i64).clamp(6, 3200).to_string()
+    };
     let path = std::env::temp_dir().join(format!("joy2con-setup-{}.sh", std::process::id()));
     if let Err(e) = std::fs::File::create(&path).and_then(|mut f| f.write_all(SETUP_SCRIPT.as_bytes())) {
         eprintln!("could not write the setup script: {e}");
@@ -82,7 +86,7 @@ fn setup(args: &[String]) -> i32 {
     let code = std::process::Command::new("pkexec")
         .arg("bash")
         .arg(&path)
-        .arg(units.to_string())
+        .arg(&units)
         .status()
         .map(|s| s.code().unwrap_or(1))
         .unwrap_or_else(|e| {

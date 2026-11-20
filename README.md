@@ -53,6 +53,7 @@ joy2con app --hidden       abre la app solo en la bandeja
 joy2con daemon [-v]        el driver (normalmente el servicio de systemd)
 joy2con status             lo que ve el driver
 joy2con setup [--interval-ms 7.5|15]
+joy2con setup --restore    vuelve a los ajustes de Bluetooth de antes
 ```
 
 ## Créditos y licencia
