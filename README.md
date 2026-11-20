@@ -45,6 +45,21 @@ printf '[Service]\nEnvironment=JOY2CON_CONNECT_DELAY=1.5\n' > ~/.config/systemd/
 systemctl --user daemon-reload && systemctl --user restart joy2con
 ```
 
+## Android
+
+`android/` tiene una app para Android 13 o más nuevo que conecta las dos
+mitades por Bluetooth LE (mismo protocolo que el driver de Linux), muestra
+botones, sticks, batería y la estabilidad del enlace, y tiene un **modo ratón**
+con cursor en pantalla a través de un servicio de accesibilidad (sin root).
+Una app normal de Android no puede crear un mando virtual para otros juegos.
+
+Compilar (sin Gradle; necesita el SDK de Android con `platforms;android-36`,
+build-tools y un JDK 17):
+
+```bash
+android/build.sh        # deja el APK en android/build/joy2con.apk
+```
+
 ## Comandos
 
 ```

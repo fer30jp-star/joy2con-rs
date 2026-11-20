@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">joy2con</string>
+    <string name="mouse_service">joy2con: Joy-Con como ratón</string>
+    <string name="mouse_service_desc">Muestra un cursor que mueves con un Joy-Con y toca la pantalla donde está. Solo actúa cuando activas \"Usar como ratón\" en joy2con. No lee el contenido de las apps.</string>
+</resources>
